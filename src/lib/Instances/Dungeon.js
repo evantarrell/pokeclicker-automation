@@ -538,10 +538,15 @@ class AutomationDungeon
             // Either we are skipping fights, or all fights are won
             const areAllBattleDefeated = avoidFights || (visibleEnemiesCount === (DungeonRunner.map.totalFights() - DungeonRunner.encountersWon()));
             const areAllChestsCollected = discoveredChestsLeftToOpenCount === this.__internal__getChestLeftToOpenCount();
+            const visibleInaccessibleObjectives = DungeonRunner.map.flash
+                                                ? this.__internal__getVisibleInaccessibleObjectives(skipBoss)
+                                                : [];
+            const canCleanupBecauseFloorIsRevealed = (nonVisibleTiles.length === 0)
+                                                   && (visibleInaccessibleObjectives.length === 0);
 
-            // If all conditions are met, or all cells are visible clean up the map and move on
-            // If all cells are visible, advance even if not all objectives are met, because there might be more on the next floor
-            if ((nonVisibleTiles.length === 0) || (areAllBattleDefeated && areAllChestsCollected && (skipBoss || foundFloorEndTile)))
+            // If all conditions are met, or all cells are visible and no inaccessible objectives remain, clean up the map and move on
+            // Known inaccessible objectives need another pathing turn before it is safe to start cleanup
+            if (canCleanupBecauseFloorIsRevealed || (areAllBattleDefeated && areAllChestsCollected && (skipBoss || foundFloorEndTile)))
             {
                 if (!avoidFights && (visibleEnemiesCount > 0))
                 {
@@ -696,10 +701,7 @@ class AutomationDungeon
         const currentBoard = DungeonRunner.map.board()[floor];
         // Transform the board into a flat array of cells (a cell is a tile + its position)
         const allCells = currentBoard.flatMap((row, y) => row.map((tile, x) => ({ tile, x, y, floor })));
-        const visibleInaccessibleObjectives = allCells.filter(
-            (cell) => cell.tile.isVisible
-                   && this.__internal__isRelevantObjective(cell, skipBoss)
-                   && !DungeonRunner.map.hasAccessToTile(cell));
+        const visibleInaccessibleObjectives = this.__internal__getVisibleInaccessibleObjectives(skipBoss);
         const accessibleUnvisitedTiles = allCells.filter(
             ({ tile, x, y, floor }) => tile.isVisible && !tile.isVisited && DungeonRunner.map.hasAccessToTile({ x, y, floor }));
         const nonEnemyCells = accessibleUnvisitedTiles.filter(({ tile }) => tile.type() !== GameConstants.DungeonTileType.enemy);
@@ -724,6 +726,23 @@ class AutomationDungeon
                 (preferredEnemyCells.length > 0) ? preferredEnemyCells : enemyCells);
             this.__internal__moveToCell(bestEnemyCell);
         }
+    }
+
+    /**
+     * @brief Returns relevant objectives which are visible but cannot currently be accessed
+     *
+     * @param skipBoss: Whether the user requested that the final boss be skipped
+     */
+    static __internal__getVisibleInaccessibleObjectives(skipBoss = false)
+    {
+        const floor = DungeonRunner.map.playerPosition().floor;
+        const currentBoard = DungeonRunner.map.board()[floor];
+        const allCells = currentBoard.flatMap((row, y) => row.map((tile, x) => ({ tile, x, y, floor })));
+
+        return allCells.filter(
+            (cell) => cell.tile.isVisible
+                   && this.__internal__isRelevantObjective(cell, skipBoss)
+                   && !DungeonRunner.map.hasAccessToTile(cell));
     }
 
     /**

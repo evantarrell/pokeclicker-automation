@@ -1,6 +1,13 @@
 import "src/lib/Instances/Dungeon.js";
 
 const GameConstants = {
+    GameState: {
+        town: 0,
+        dungeon: 1
+    },
+    Pokeball: {
+        None: -1
+    },
     DungeonTileType: {
         empty: 0,
         enemy: 1,
@@ -12,6 +19,9 @@ const GameConstants = {
 };
 
 let DungeonRunner;
+let DungeonBattle;
+let Automation;
+let App;
 
 function makeTile(type, { visible = true, visited = false, tier = "common" } = {})
 {
@@ -34,9 +44,12 @@ function setupMap(boards, playerPosition, accessiblePositions)
     const map = {
         flash: {},
         board: () => boards,
+        floorSizes: boards.map((board) => board.length),
         playerPosition: () => playerPosition,
         hasAccessToTile: ({ x, y, floor }) => positionKeys.has(`${x},${y},${floor}`),
-        moveToCoordinates: jest.fn()
+        moveToCoordinates: jest.fn(),
+        totalFights: () => boards.flat().flat().filter(
+            (tile) => tile.type() === GameConstants.DungeonTileType.enemy).length
     };
     map.nearbyTiles = ({ x, y, floor }) => [
         boards[floor][y - 1]?.[x],
@@ -47,6 +60,36 @@ function setupMap(boards, playerPosition, accessiblePositions)
 
     DungeonRunner = { map };
     return map;
+}
+
+function setupDungeonLoop(map, { avoidFights = true, skipBoss = false } = {})
+{
+    App = { game: { gameState: GameConstants.GameState.dungeon } };
+    DungeonBattle = { catching: () => false };
+    DungeonRunner = {
+        map,
+        fightingBoss: () => false,
+        fighting: () => false,
+        encountersWon: () => 0,
+        openChest: jest.fn(),
+        startBossFight: jest.fn(),
+        dungeonLeave: jest.fn()
+    };
+    Automation = {
+        Menu: { forceAutomationState: jest.fn() },
+        Utils: {
+            LocalStorage: {
+                getValue: (setting) => ({
+                    [AutomationDungeon.Settings.AvoidEncounters]: avoidFights.toString(),
+                    [AutomationDungeon.Settings.SkipBoss]: skipBoss.toString(),
+                    [AutomationDungeon.Settings.BossCatchPokeballToUse]: GameConstants.Pokeball.None.toString()
+                })[setting]
+            },
+            Pokeball: { catchEverythingWith: jest.fn() }
+        }
+    };
+    AutomationDungeon.__internal__isFirstMove = false;
+    AutomationDungeon.__internal__isRecovering = false;
 }
 
 beforeEach(() =>
@@ -161,5 +204,92 @@ describe("AutomationDungeon expanded Flash handling", () =>
         AutomationDungeon.__internal__resetSavedStates();
         expect(AutomationDungeon.__internal__floorEndPosition).toBeNull();
         expect(AutomationDungeon.__internal__chestPositions).toEqual([]);
+    });
+
+    test("does not clean up an all-visible floor while a desired chest is inaccessible", () =>
+    {
+        const board = makeBoard(3);
+        board.flat().forEach((tile) => tile.isVisible = true);
+        board[0][0] = makeTile(GameConstants.DungeonTileType.entrance, { visited: true });
+        board[0][1] = makeTile(GameConstants.DungeonTileType.empty);
+        board[1][1] = makeTile(GameConstants.DungeonTileType.chest, { tier: "epic" });
+        board[2][2] = makeTile(GameConstants.DungeonTileType.boss);
+        const map = setupMap([ board ], { x: 0, y: 0, floor: 0 }, [
+            { x: 1, y: 0, floor: 0 },
+            { x: 2, y: 2, floor: 0 }
+        ]);
+        setupDungeonLoop(map);
+
+        AutomationDungeon.__internal__dungeonFightLoop();
+
+        expect(map.moveToCoordinates).toHaveBeenCalledWith(1, 0, 0);
+        expect(DungeonRunner.startBossFight).not.toHaveBeenCalled();
+    });
+
+    test("allows cleanup when the only inaccessible chest is below the selected rarity", () =>
+    {
+        const board = makeBoard(3);
+        board.flat().forEach((tile) => tile.isVisible = true);
+        board[0][0] = makeTile(GameConstants.DungeonTileType.entrance, { visited: true });
+        board[1][1] = makeTile(GameConstants.DungeonTileType.chest, { tier: "common" });
+        board[2][2] = makeTile(GameConstants.DungeonTileType.boss);
+        const map = setupMap([ board ], { x: 0, y: 0, floor: 0 }, [ { x: 2, y: 2, floor: 0 } ]);
+        setupDungeonLoop(map);
+
+        AutomationDungeon.__internal__dungeonFightLoop();
+
+        expect(map.moveToCoordinates).toHaveBeenCalledWith(2, 2, 0);
+        expect(DungeonRunner.startBossFight).toHaveBeenCalled();
+    });
+
+    test("forced chest opening blocks cleanup for an inaccessible common chest", () =>
+    {
+        const board = makeBoard(3);
+        board.flat().forEach((tile) => tile.isVisible = true);
+        board[0][0] = makeTile(GameConstants.DungeonTileType.entrance, { visited: true });
+        board[0][1] = makeTile(GameConstants.DungeonTileType.empty);
+        board[1][1] = makeTile(GameConstants.DungeonTileType.chest, { tier: "common" });
+        board[2][2] = makeTile(GameConstants.DungeonTileType.boss);
+        const map = setupMap([ board ], { x: 0, y: 0, floor: 0 }, [
+            { x: 1, y: 0, floor: 0 },
+            { x: 2, y: 2, floor: 0 }
+        ]);
+        setupDungeonLoop(map);
+        AutomationDungeon.AutomationRequestedModes = [ AutomationDungeon.InternalModes.ForceChestOpening ];
+
+        AutomationDungeon.__internal__dungeonFightLoop();
+
+        expect(map.moveToCoordinates).toHaveBeenCalledWith(1, 0, 0);
+        expect(DungeonRunner.startBossFight).not.toHaveBeenCalled();
+    });
+
+    test("does not let an inaccessible skipped boss block cleanup", () =>
+    {
+        const board = makeBoard(3);
+        board.flat().forEach((tile) => tile.isVisible = true);
+        board[0][0] = makeTile(GameConstants.DungeonTileType.entrance, { visited: true });
+        board[1][1] = makeTile(GameConstants.DungeonTileType.boss);
+        const map = setupMap([ board ], { x: 0, y: 0, floor: 0 }, []);
+        setupDungeonLoop(map, { skipBoss: true });
+
+        AutomationDungeon.__internal__dungeonFightLoop();
+
+        expect(DungeonRunner.dungeonLeave).toHaveBeenCalled();
+    });
+
+    test("approaches an inaccessible ladder on an all-visible multi-floor map", () =>
+    {
+        const firstFloor = makeBoard(3);
+        const secondFloor = makeBoard(3);
+        firstFloor.flat().forEach((tile) => tile.isVisible = true);
+        firstFloor[2][1] = makeTile(GameConstants.DungeonTileType.entrance, { visited: true });
+        firstFloor[1][1] = makeTile(GameConstants.DungeonTileType.empty);
+        firstFloor[0][1] = makeTile(GameConstants.DungeonTileType.ladder);
+        const map = setupMap([ firstFloor, secondFloor ], { x: 1, y: 2, floor: 0 }, [ { x: 1, y: 1, floor: 0 } ]);
+        setupDungeonLoop(map);
+
+        AutomationDungeon.__internal__dungeonFightLoop();
+
+        expect(map.moveToCoordinates).toHaveBeenCalledWith(1, 1, 0);
     });
 });
