@@ -449,7 +449,7 @@ class AutomationDungeon
      */
     static __internal__dungeonFightLoop()
     {
-        const forceDungeonProcessing = (this.AutomationRequestedModes != []);
+        const forceDungeonProcessing = this.AutomationRequestedModes.length > 0;
 
         const avoidFights = (Automation.Utils.LocalStorage.getValue(this.Settings.AvoidEncounters) === "true")
                          && !this.AutomationRequestedModes.includes(this.InternalModes.ForcePokemonFight);
@@ -594,7 +594,7 @@ class AutomationDungeon
                         // Equip the selected pokeball (if None is set, or the automation forced a mode, keep the user in-game setting)
                         const ballToCatchBoss = parseInt(Automation.Utils.LocalStorage.getValue(this.Settings.BossCatchPokeballToUse));
                         if ((ballToCatchBoss != GameConstants.Pokeball.None)
-                            && (this.AutomationRequestedModes == []))
+                            && !forceDungeonProcessing)
                         {
                             Automation.Utils.Pokeball.catchEverythingWith(ballToCatchBoss);
                         }
