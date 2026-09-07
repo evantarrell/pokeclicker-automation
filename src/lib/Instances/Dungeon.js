@@ -269,8 +269,7 @@ class AutomationDungeon
         // Add the avoid encounters button
         const avoidEncountersTooltip = "If enabled, it will only fight battles that are not avoidable."
                                      + Automation.Menu.TooltipSeparator
-                                     + "This setting only applies when the torchlight has been unlocked\n"
-                                     + "(after 200 clears in the current dungeon)."
+                                     + "This setting only applies after all desired chests have been found."
                                      + Automation.Menu.TooltipSeparator
                                      + "It will still collect any chests found, before fighting\n"
                                      + "the boss, unless it was disabled as well.";
@@ -531,9 +530,7 @@ class AutomationDungeon
             // Check if all relevant tiles have been explored for each category
             // Either we are skipping fights, or all fights are won
             const areAllBattleDefeated = avoidFights || (visibleEnemiesCount === (DungeonRunner.map.totalFights() - DungeonRunner.encountersWon()));
-            // Either we are skipping chests, or all remaining chests are visible
-            const areAllChestsCollected = (discoveredChestsLeftToOpenCount === this.__internal__getChestLeftToOpenCount())
-                                       || (foundFloorEndTile && !DungeonRunner.map.flash && avoidFights);
+            const areAllChestsCollected = discoveredChestsLeftToOpenCount === this.__internal__getChestLeftToOpenCount();
 
             // If all conditions are met, or all cells are visible clean up the map and move on
             // If all cells are visible, advance even if not all objectives are met, because there might be more on the next floor
