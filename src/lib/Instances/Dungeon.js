@@ -520,6 +520,13 @@ class AutomationDungeon
                 return;
             }
 
+            // Flash can reveal cells beyond the cardinally adjacent tiles. Only store objectives
+            // once PokéClicker considers them reachable by the existing cleanup logic.
+            if (DungeonRunner.map.flash)
+            {
+                this.__internal__markVisibleAccessibleTiles();
+            }
+
             const flatBoard = DungeonRunner.map.board()[DungeonRunner.map.playerPosition().floor].flat();
             // If recovering, only end if all tiles are visited, otherwise, when all cells are visible
             const nonVisibleTiles = this.__internal__isRecovering ? flatBoard.filter((tile) => !tile.isVisited)
@@ -613,7 +620,7 @@ class AutomationDungeon
             // If the flashight is unlocked, use it to avoid fighting every encounters
             if (DungeonRunner.map.flash)
             {
-                this.__internal__handleFlashPathing();
+                this.__internal__handleFlashPathing(skipBoss);
             }
             else
             {
@@ -683,34 +690,55 @@ class AutomationDungeon
      *
      * It will try to uncover all the tiles, avoiding as many encounters as possible
      */
-    static __internal__handleFlashPathing()
+    static __internal__handleFlashPathing(skipBoss = false)
     {
         const floor = DungeonRunner.map.playerPosition().floor;
         const currentBoard = DungeonRunner.map.board()[floor];
         // Transform the board into a flat array of cells (a cell is a tile + its position)
         const allCells = currentBoard.flatMap((row, y) => row.map((tile, x) => ({ tile, x, y, floor })));
+        const visibleInaccessibleObjectives = allCells.filter(
+            (cell) => cell.tile.isVisible
+                   && this.__internal__isRelevantObjective(cell, skipBoss)
+                   && !DungeonRunner.map.hasAccessToTile(cell));
         const accessibleUnvisitedTiles = allCells.filter(
             ({ tile, x, y, floor }) => tile.isVisible && !tile.isVisited && DungeonRunner.map.hasAccessToTile({ x, y, floor }));
         const nonEnemyCells = accessibleUnvisitedTiles.filter(({ tile }) => tile.type() !== GameConstants.DungeonTileType.enemy);
         const enemyCells = accessibleUnvisitedTiles.filter(({ tile }) => tile.type() === GameConstants.DungeonTileType.enemy);
         if (nonEnemyCells.length > 0)
         {
-            const bestEmptyCell = this.__internal__getCellWithMostNonVisitedNeightbours(nonEnemyCells);
+            const preferredNonEnemyCells = this.__internal__getObjectiveApproachCells(nonEnemyCells, visibleInaccessibleObjectives);
+            const bestEmptyCell = this.__internal__getCellWithMostNonVisitedNeightbours(
+                (preferredNonEnemyCells.length > 0) ? preferredNonEnemyCells : nonEnemyCells);
             // Only bother to move if it will reveal anything
             if (bestEmptyCell.nonVisitedNeighborsCount > 0)
             {
                 this.__internal__moveToCell(bestEmptyCell);
-                this.__internal__markAdjacentTiles();
                 return;
             }
         }
 
         if (enemyCells.length > 0)
         {
-            const bestEnemyCell = this.__internal__getCellWithMostNonVisitedNeightbours(enemyCells);
+            const preferredEnemyCells = this.__internal__getObjectiveApproachCells(enemyCells, visibleInaccessibleObjectives);
+            const bestEnemyCell = this.__internal__getCellWithMostNonVisitedNeightbours(
+                (preferredEnemyCells.length > 0) ? preferredEnemyCells : enemyCells);
             this.__internal__moveToCell(bestEnemyCell);
-            this.__internal__markAdjacentTiles();
         }
+    }
+
+    /**
+     * @brief Returns cells which would make a visible objective accessible after moving
+     *
+     * @param candidateCells: The cells which can currently be moved to
+     * @param objectives: The visible but inaccessible objectives to approach
+     */
+    static __internal__getObjectiveApproachCells(candidateCells, objectives)
+    {
+        return candidateCells.filter((cell) => this.__internal__nearbyCells(cell).some(
+            (neighbor) => objectives.some(
+                (objective) => (objective.x === neighbor.x)
+                            && (objective.y === neighbor.y)
+                            && (objective.floor === neighbor.floor))));
     }
 
     /**
@@ -765,18 +793,23 @@ class AutomationDungeon
     }
 
     /**
-     * @brief Marks relevant features for each adjacent tiles
-     *
-     * This should only be used if the player has flashlight unlocked, otherwise this info is not supposed to be known
+     * @brief Marks visible objectives which PokéClicker currently allows the player to access
      */
-    static __internal__markAdjacentTiles()
+    static __internal__markVisibleAccessibleTiles()
     {
-        const point = DungeonRunner.map.playerPosition();
-        // Cant use the map.nearbyTiles() function as it doesn't return the coordinates
-        const nearbyCells = this.__internal__nearbyCells(point);
-        for (const cell of nearbyCells)
+        const floor = DungeonRunner.map.playerPosition().floor;
+        const board = DungeonRunner.map.board()[floor];
+
+        for (const [ y, row ] of board.entries())
         {
-            this.__internal__markCell(cell);
+            for (const [ x, tile ] of row.entries())
+            {
+                const cell = { tile, x, y, floor };
+                if (tile.isVisible && DungeonRunner.map.hasAccessToTile(cell))
+                {
+                    this.__internal__markCell(cell);
+                }
+            }
         }
     }
 
@@ -1000,16 +1033,9 @@ class AutomationDungeon
      */
     static __internal__addChestPosition(cell)
     {
-        const forceChestOpening = this.AutomationRequestedModes.includes(this.InternalModes.ForceChestOpening);
-
-        if (!forceChestOpening)
+        if (!this.__internal__shouldCollectChest(cell))
         {
-            // Don't add the chest if its rarity is lower than the user selected one
-            const currentChestRarity = this.__internal__chestTypes[cell.tile.metadata.tier];
-            if (currentChestRarity < this.__internal__chestMinRarityDropdownList.selectedValue)
-            {
-                return;
-            }
+            return;
         }
 
         // Don't add the chest if it was already added to the list
@@ -1020,25 +1046,59 @@ class AutomationDungeon
     }
 
     /**
+     * @brief Checks if the given chest matches the active collection criteria
+     *
+     * @param cell: The chest cell to evaluate
+     */
+    static __internal__shouldCollectChest(cell)
+    {
+        if (this.AutomationRequestedModes.includes(this.InternalModes.ForceChestOpening))
+        {
+            return true;
+        }
+
+        const currentChestRarity = this.__internal__chestTypes[cell.tile.metadata.tier];
+        return currentChestRarity >= this.__internal__chestMinRarityDropdownList.selectedValue;
+    }
+
+    /**
+     * @brief Checks if a visible cell should influence Flash pathing
+     *
+     * @param cell: The cell to evaluate
+     * @param skipBoss: Whether the user requested that the final boss be skipped
+     */
+    static __internal__isRelevantObjective(cell, skipBoss = false)
+    {
+        const cellType = cell.tile.type();
+        if (cellType === GameConstants.DungeonTileType.ladder)
+        {
+            return true;
+        }
+        if (cellType === GameConstants.DungeonTileType.boss)
+        {
+            return !skipBoss;
+        }
+        if (cellType === GameConstants.DungeonTileType.chest)
+        {
+            return this.__internal__shouldCollectChest(cell);
+        }
+        return false;
+    }
+
+    /**
      * @brief Gets the number of unopened chest left in the dungeon matching the user criteria
      *
      * @returns The number of unopened chest
      */
     static __internal__getChestLeftToOpenCount()
     {
-        const forceChestOpening = this.AutomationRequestedModes.includes(this.InternalModes.ForceChestOpening);
-
         let result = 0;
         for (const tile of DungeonRunner.map.board().flat().flat())
         {
-            if (tile.type() == GameConstants.DungeonTileType.chest)
+            if ((tile.type() == GameConstants.DungeonTileType.chest)
+                && this.__internal__shouldCollectChest({ tile }))
             {
-                const currentChestRarity = Automation.Dungeon.__internal__chestTypes[tile.metadata.tier];
-
-                if (forceChestOpening || (currentChestRarity >= this.__internal__chestMinRarityDropdownList.selectedValue))
-                {
-                    result++;
-                }
+                result++;
             }
         }
 
